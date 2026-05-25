@@ -1,7 +1,8 @@
 /**
- * @name simulation
- * @description Returns success message after bulk inserting simulation details
- * @createdOn Apr 10th, 2026
+ * @name rollback-rundown
+ * @description Returns success message after rolling back rundown
+ * @createdOn May 20th, 2026
+ * @author Priyadarshini Gangone
  * @modifiedBy
  * @modifiedOn
  * @modificationSummary
@@ -12,28 +13,20 @@ const {
   BadRequest,
   HTTP_RESPONSE_CODES,
 } = require("utils/api_response_utils");
-const { createSimulation } = require("./postSimulationService");
+const { rollbackSimulation } = require("./rollbackSimulationService");
 const { API_ERROR_MESSAGE } = require("constants/customConstants");
 
 /**
- * @description Lambda handler for Post Run Simulation API.
+ * @description Lambda handler for Rollback Rundown POST API.
  * @param {Object} event: API event with request body:
   {
-    "scenarioId": "uniqueScenarioId",
-    "userEmail": "user@toyota.com",
-    "userName": "User Name",
-    "data": [
-      {
-        "groupId": "uniqueGroupId",
-        "vanningCenter": "TMK",
-        "subSeriesList": ["CAMRY", "RAV4 Gas"]
-      }
-    ]
+    "simulationId": "uuid",
+    "userEmail": "gangone.priyadarshini@toyota.com"
   }
  * @returns {Promise<Object>}: response sample is detailed below.
  * Success response with status code 200:
  * {
-    "message": "Successfully initiated simulation."
+    "message": "Successfully rolled back rundown to draft state."
    }
  * In-valid input error with status 400:
   {
@@ -47,15 +40,15 @@ const { API_ERROR_MESSAGE } = require("constants/customConstants");
 exports.handler = async (event) => {
   try {
     /**
-     * @description Function to validate input and insert simulation data.
+     * @description Function to validate input and rollback simulation.
      * @param {Object} event: Input parameters
-     * @returns {Promise<Object>} successResponse - success response with simulation details
+     * @returns {Promise<Object>} successResponse - success response
      */
-    const successResponse = await createSimulation(event);
-    console.log("Post Simulation Response:", successResponse);
+    const successResponse = await rollbackSimulation(event);
+    console.log("Rollback Simulation Response:", successResponse);
     return sendResponse(HTTP_RESPONSE_CODES.SUCCESS, successResponse);
   } catch (error) {
-    console.log("Handler Error - Simulation Post API:", error);
+    console.log("Handler Error - Rollback Simulation Post API:", error);
     let errorMessage = API_ERROR_MESSAGE.INTERNAL_SERVER_ERROR;
     let statusCode = HTTP_RESPONSE_CODES.INTERNAL_SERVER_ERROR;
     /** If validation errors exist */
@@ -65,7 +58,7 @@ exports.handler = async (event) => {
         .split(/,(?=ValidationError:)/)
         .map((e) => e.trim());
       console.log(
-        "Validation error messages - Simulation Post API:",
+        "Validation error messages - Rollback Simulation Post API:",
         errorMessage
       );
     }

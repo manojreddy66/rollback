@@ -1,14 +1,14 @@
 /**
- * @description this file contains post simulation common utils
+ * @description this file contains rollback simulation common utils
  */
 
 /**
- * @description Function to prepare success response for post simulation API
+ * @description Function to prepare success response for rollback simulation API
  * @returns {Object} response - success response with message
  */
 function prepareResponse() {
   return {
-    message: "Successfully initiated simulation.",
+    message: "Successfully rolled back rundown to draft state.",
   };
 }
 

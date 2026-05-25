@@ -263,11 +263,14 @@ class simulationData extends BaseService {
 
   /**
    * @description Function to fetch all active simulation rows for a given scenario
-   * @param {String} scenarioId - scenario id
+   * @param {Object} input - request query params
    * @returns {Array} simulation rows
    */
-  async getRundownsByScenarioId(scenarioId) {
+  async getRundownsByScenarioId(input) {
     try {
+      const condition = input.type
+        ? Prisma.sql`AND simulation_status in ('Submitted For Review', 'Approved', 'Rejected', 'Promoted')`
+        : Prisma.empty;
       return await this.prisma.$queryRaw`
         SELECT
           simulation_id::uuid AS "simulationId",
@@ -282,7 +285,8 @@ class simulationData extends BaseService {
           activity_log AS "activityLog",
           error_messages AS "errorMessages"
         FROM supply_planning.simulation
-        WHERE scenario_id = ${scenarioId}::uuid
+        WHERE scenario_id = ${input.scenarioId}::uuid
+          ${condition}
           AND is_active = TRUE;
       `;
     } catch (err) {
@@ -388,6 +392,37 @@ class simulationData extends BaseService {
       `;
     } catch (err) {
       console.log("Error in updateActivityLog:", err);
+      throw err;
+    }
+  }
+
+    /**
+   * @description Function to rollback simulation rundown by updating simulation status
+   * @param {String} simulationId - simulation UUID
+   * @param {String} userEmail - user email for audit
+   * @param {String} simulationStatus - target simulation status
+   * @returns {Promise<Object>} update result
+   */
+  async rollbackSimulationRundown(
+    simulationId,
+    userName,
+    userEmail,
+    simulationStatus,
+    activityLog
+  ) {
+    try {
+      return await this.prisma.$queryRaw`
+        UPDATE supply_planning.simulation
+        SET simulation_status = ${simulationStatus}::text,
+            last_updated_timestamp = CURRENT_TIMESTAMP,
+            updated_by = ${userEmail}::text,
+            updated_by_user_name = ${userName}::text
+            activity_log = ${activityLog}::jsonb
+        WHERE simulation_id = ${simulationId}::uuid
+          AND is_active = true;
+      `;
+    } catch (err) {
+      console.log("Error in rollbackSimulationRundown:", err);
       throw err;
     }
   }
