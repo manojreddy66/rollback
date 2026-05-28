@@ -1,7 +1,7 @@
 /**
- * @name update-groups
- * @description Returns success message after creating/updating groups for a scenario
- * @createdOn Apr 30th, 2026
+ * @name delete-scenario
+ * @description Returns success message after deleting (soft-deleting) a scenario
+ * @createdOn Feb 26th, 2026
  * @author Priyadarshini Gangone
  * @modifiedBy
  * @modifiedOn
@@ -13,72 +13,56 @@ const {
   BadRequest,
   HTTP_RESPONSE_CODES,
 } = require("utils/api_response_utils");
-const { upsertGroupData } = require("./groupsService");
+const { deleteScenario } = require("./deleteScenarioService");
 const { API_ERROR_MESSAGE } = require("constants/customConstants");
 
 /**
- * @description Lambda handler for POST Groups API.
- * @param {Object} event: API event with request body:
-  {
-    "scenarioId": "uniqueScenarioId",
-    "userEmail": "user@toyota.com",
-    "data": [
-      {
-        "groupId": "group-uuid-1",
-        "groupScenarioMapId": "grp_scenario_mp_id uuid",
-        "groupName": "Group1",
-        "vanningCenter": "TMK",
-        "subSeriesList": ["CAMRY", "RAV4 Gas"]
-      },
-      {
-        "groupId": "1",
-        "groupScenarioMapId": 1,
-        "groupName": "Group2",
-        "vanningCenter": "TMH",
-        "subSeriesList": ["HighLander"]
-      }
-    ]
-  }
- * @returns {Promise<Object>}: response sample is detailed below.
- * Success response with status code 200:
+ * @description Lambda handler for delete scenario.
+ *@param {Object} event: API event with body:
+    {
+      "scenarioId": "Getsudo/TMMI/Line1_Cycle_V1",
+      "userEmail": "gangone.priyadarshini@toyota.com"
+    }
+ ** @returns {Promise<Object>}: response sample is detailed below.
+ *  Response object sample for success response with status code 200.
  * {
-    "message": "Successfully updated data."
-   }
+     "message": "Successfully deleted scenario."
+ * }
  * In-valid input error with status 400:
-  {
-    "errorMessage": [<"ValidationError: validation error message">]
-  }
- * Internal server error with status code 500:
-  {
-    "errorMessage": "Internal Server Error"
-  }
- */
+    {
+      "errorMessage": [<"ValidationError: validation error message”>]
+    }
+ * Response object sample for any internal server error with status code 500.
+    {
+      "errorMessage": <"Internal Server Error">
+    }
+  * HTTP_RESPONSE_CODES info:
+    {
+      SUCCESS: 200,
+      VALIDATION_ERROR: 400,
+      INTERNAL_SERVER_ERROR: 500
+    }
+*/
 exports.handler = async (event) => {
   try {
     /**
-     * @description Function to validate input and create/update groups.
-     * @param {Object} event: Input parameters
-     * @returns {Object} updateResponse - success response
+     * @description Function to validate & delete scenario.
+     * @param {Object} event: Input request
+     * @returns {Object} deleteResponse - Success message
      */
-    const updateResponse = await upsertGroupData(event);
-    console.log("Update Groups Post API Response:", updateResponse);
-    return sendResponse(HTTP_RESPONSE_CODES.SUCCESS, updateResponse);
+    const deleteResponse = await deleteScenario(event);
+    console.log("response:", deleteResponse);
+    return sendResponse(HTTP_RESPONSE_CODES.SUCCESS, deleteResponse);
   } catch (error) {
-    console.log("Update Groups Post API - Handler Error:", error);
+    console.log("Handler Error:", error);
     let errorMessage = API_ERROR_MESSAGE.INTERNAL_SERVER_ERROR;
     let statusCode = HTTP_RESPONSE_CODES.INTERNAL_SERVER_ERROR;
-    /**
-     * @description If error is BadRequest, return 400 with validation messages
-     */
     if (error instanceof BadRequest) {
       statusCode = HTTP_RESPONSE_CODES.BAD_REQUEST;
       errorMessage = error.message
         .split(/,(?=ValidationError:)/)
-        .map((err) => err.trim());
-      console.log(
-        "Validation error messages - Update Groups Post API:",
-        errorMessage
-      );
+        .map((e) => e.trim());
+      console.log("Validation error messages: ", errorMessage);
     }
     return sendResponse(statusCode, { errorMessage });
   }

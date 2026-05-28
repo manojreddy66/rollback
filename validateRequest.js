@@ -1,191 +1,92 @@
 /**
- * @description this file contains request validation methods
+ * @description This file contains input validations for delete scenario API
  */
 
+const { emptyInputCheck } = require("utils/common_utils");
 const { dbConnect } = require("prismaORM/index");
-const { scenariosData } = require("prismaORM/services/scenariosService");
-const {
-  groupScenarioMapperData,
-} = require("prismaORM/services/groupScenarioMapperService");
-const { groupingData } = require("prismaORM/services/groupingService");
 const {
   getValidationSchema,
-} = require("schemaValidator/supplyPlanning/grouping/postGroupsSchema");
-const {
-  emptyInputCheck,
-  checkForNonEditableScenario,
-  buildExistingSignatureToGroupIds,
-  validateDuplicateSignatureInInput,
-  validateDuplicateSignatureWithExisting,
-} = require("utils/common_utils");
-const { BadRequest } = require("utils/api_response_utils");
+} = require("schemaValidator/supplyPlanning/scenario/deleteScenarioSchema");
+const { scenariosData } = require("prismaORM/services/scenariosService");
+const { SCENARIO_STATUSES } = require("constants/customConstants");
 
 /**
- * @description Function to validate input request body
- * @param {Object} groupsInput: API input request body
- * @returns {Promise<Object>} errorMessages - Validation errors if any
- * & scenarioData - scenario data by scenarioId
+ * @description Validate input and business rules for delete scenario.
+ * @param {Object} body: API input request
+ * @returns {Promise<Array>} errorMessages: List of validation error messages
+ *  - Request body must not be empty
+ *  - Scenario must exist and be active
+ *  - Only creator can delete
+ *  - Cannot delete if scenario is Completed
  */
-async function validateInput(groupsInput) {
+async function validateInput(body) {
   const errorMessages = [];
   /**
-   * @description Function to check if request body is empty
-   * @param {Object} groupsInput: Input request
+   * @description Validate: request body should not be empty.
    */
-  emptyInputCheck(groupsInput);
+  emptyInputCheck(body);
   /**
-   * @description Validate request body using Joi schema
+   * @description Function to validate input request
    */
-  validateParams(groupsInput, errorMessages);
-
-  let scenarioData = null;
-  /**
-   * @description If Joi validation passed, perform DB validations
-   */
-  if (errorMessages.length === 0) {
-    /**
-     * @description Validate scenario exists (DB validation)
-     */
-    scenarioData = await checkForInvalidScenario(groupsInput);
-    /**
-     * @description If scenario exists, validate that all simulations are in draft status
-     */
-    await checkForNonEditableScenario(groupsInput);
-    /**
-     * @description Check if groupName already exists for the scenario
-     */
-    await checkForDuplicateGroupName(groupsInput);
-    /**
-     * @description Check if vanningCenter and subSeriesList combination already exists for the scenario
-     */
-    await checkForDuplicateVanningCenterSubSeries(groupsInput);
+  validateParams(body, errorMessages);
+  //DB validations
+  if (!errorMessages.length) {
+    await validateScenarioDeletable(body, errorMessages);
   }
-  return { errorMessages: [...new Set(errorMessages)], scenarioData };
+  return { errorMessages: [...new Set(errorMessages)] };
 }
 
 /**
- * @description Function to validate request body using Joi schema
- * @param {Object} groupsInput - request body
- * @param {Array} errorMessages - array to collect validation errors
+ * @description Function to validate input request
+ * @param {Object} body: API input request
+ * @returns {Array} errorMessages: List of validation error messages
  */
-function validateParams(groupsInput, errorMessages) {
+function validateParams(body, errorMessages) {
   const schema = getValidationSchema();
-  const { error } = schema.validate(groupsInput, { abortEarly: false });
+  const { error } = schema.validate(body, { abortEarly: false });
   if (error?.details?.length) {
-    error.details.forEach((e) => errorMessages.push(e.message));
+    error.details.forEach((e) => {
+      errorMessages.push(e.message);
+    });
   }
 }
 
 /**
- * @description Function to check if a scenario exists
- * @param {Object} groupsInput - request body
- * @returns {Promise<Object|null>} scenario row if exists else throw error
+ * @description Function to validate scenario deletable conditions in DB:
+ * 1) Scenario exists AND is active
+ * 2) Cannot delete if scenario_status is 'Completed'
+ * 3) Only creator can delete
+ * @returns {Promise<boolean>}
  */
-async function checkForInvalidScenario(groupsInput) {
+async function validateScenarioDeletable(body, errorMessages) {
   const rdb = await dbConnect();
   const scenariosService = new scenariosData(rdb);
   try {
-    /**
-     * @description Get scenario data by scenarioId
-     */
     const scenarioData = await scenariosService.getScenarioDataById(
-      groupsInput.scenarioId
+      body.scenarioId
     );
-    /**
-     * @description If scenario doesn't exist, add validation error and return null
-     */
-    if (!scenarioData || scenarioData.length === 0) {
-      throw new BadRequest("ValidationError: Scenario doesn't exist.");
+    const scenarioDetails = scenarioData?.[0];
+    /* Check if scenario exists in DB.*/
+    if (!scenarioDetails) {
+      errorMessages.push("ValidationError: Scenario doesn't exist.");
+      return;
     }
-    return scenarioData[0];
+    /* Check if scenario is not in completed/rundown-complete status.*/
+    if (scenarioDetails.scenario_status === SCENARIO_STATUSES.COMPLETED) {
+      errorMessages.push(
+        "ValidationError: Scenario cannot be deleted once rundown is complete."
+      );
+    }
+    /* Check if the creator is the same as the requester */
+    if (scenarioDetails.user_email !== body.userEmail) {
+      errorMessages.push(
+        "ValidationError: Only user who has created the scenario is allowed to delete."
+      );
+    }
   } catch (err) {
-    console.log("Error in checkForInvalidScenario:", err);
+    console.log("Error in validateScenarioDeletable:", err);
     throw err;
   }
 }
 
-/**
- * @description Function to check if provided groupName already exists for the scenario
- * @param {Object} groupsInput - request body
- * @returns {Promise<void>} Void if validation is successful
- */
-async function checkForDuplicateGroupName(groupsInput) {
-  const { scenarioId, data } = groupsInput;
-  const rdb = await dbConnect();
-  const groupScenarioMapperService = new groupScenarioMapperData(rdb);
-  try {
-    /**
-     * @description Extract groupNames and groupScenarioMapIds of update rows to exclude
-     */
-    const groupNames = data.map((item) => item.groupName);
-    const excludeGroupScenarioMapIds = data
-      .filter((item) => typeof item.groupScenarioMapId === "string")
-      .map((item) => item.groupScenarioMapId);
-    /**
-     * @description Get existing group names for the scenario excluding update rows
-     */
-    const existingGroups =
-      await groupScenarioMapperService.getExistingGroupNames(
-        scenarioId,
-        groupNames,
-        excludeGroupScenarioMapIds
-      );
-    /**
-     * @description If any groupName already exists, throw validation error
-     */
-    if (existingGroups && existingGroups.length > 0) {
-      throw new BadRequest(
-        "ValidationError: Provided groupName already exists."
-      );
-    }
-  } catch (err) {
-    console.log("Error in checkForDuplicateGroupName:", err);
-    throw err;
-  }
-}
-
-/**
- * @description Function to check if vanningCenter and subSeriesList combination already exists for the scenario
- * @param {Object} groupsInput - request body
- * @returns {Promise<void>} Void if validation is successful
- */
-async function checkForDuplicateVanningCenterSubSeries(groupsInput) {
-  const { scenarioId, data } = groupsInput;
-  const rdb = await dbConnect();
-  const groupingDataService = new groupingData(rdb);
-  try {
-    /**
-     * @description Extract groupScenarioMapIds of update rows to exclude
-     */
-    const excludeGroupScenarioMapIds = data
-      .filter((item) => typeof item.groupScenarioMapId === "string")
-      .map((item) => item.groupScenarioMapId);
-    /**
-     * @description Get existing vanningCenter and subSeriesList combinations for the scenario excluding update rows
-     */
-    const existingGroupData =
-      await groupingDataService.getGroupsDataByScenarioId(scenarioId);
-    /**
-     * @description Build a unique signature for each groupId using vanningCenter + sorted subSeries list
-     */
-    validateDuplicateSignatureInInput(data);
-    /* If active groups exists for scenario */
-    if (existingGroupData && existingGroupData.length > 0) {
-      const existingSignatureToGroupIds = buildExistingSignatureToGroupIds(
-        existingGroupData,
-        excludeGroupScenarioMapIds
-      );
-      /**
-       * @description Validate that no signature in input matches with existing signatures for different groupScenarioMapIds, if yes throw validation error
-       */
-      validateDuplicateSignatureWithExisting(data, existingSignatureToGroupIds);
-    }
-  } catch (err) {
-    console.log("Error in checkForDuplicateVanningCenterSubSeries:", err);
-    throw err;
-  }
-}
-
-module.exports = {
-  validateInput,
-};
+module.exports = { validateInput };
