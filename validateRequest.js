@@ -1,100 +1,191 @@
 /**
- * @description this file contains input request validation methods
+ * @description this file contains request validation methods
  */
 
 const { dbConnect } = require("prismaORM/index");
-const { simulationData } = require("prismaORM/services/simulationService");
+const { scenariosData } = require("prismaORM/services/scenariosService");
+const {
+  groupScenarioMapperData,
+} = require("prismaORM/services/groupScenarioMapperService");
+const { groupingData } = require("prismaORM/services/groupingService");
 const {
   getValidationSchema,
-} = require("schemaValidator/supplyPlanning/simulation/postRollbackSimulationSchema");
-const { emptyInputCheck } = require("utils/common_utils");
-const { SIMULATION_STATUSES } = require("constants/customConstants");
+} = require("schemaValidator/supplyPlanning/grouping/postGroupsSchema");
+const {
+  emptyInputCheck,
+  checkForNonEditableScenario,
+  buildExistingSignatureToGroupIds,
+  validateDuplicateSignatureInInput,
+  validateDuplicateSignatureWithExisting,
+} = require("utils/common_utils");
 const { BadRequest } = require("utils/api_response_utils");
 
 /**
  * @description Function to validate input request body
- * @param {Object} reqPayload: API input request body
+ * @param {Object} groupsInput: API input request body
  * @returns {Promise<Object>} errorMessages - Validation errors if any
+ * & scenarioData - scenario data by scenarioId
  */
-async function validateRequestBody(reqPayload) {
+async function validateInput(groupsInput) {
   const errorMessages = [];
   /**
    * @description Function to check if request body is empty
-   * @param {Object} reqPayload: Input request
+   * @param {Object} groupsInput: Input request
    */
-  emptyInputCheck(reqPayload);
+  emptyInputCheck(groupsInput);
   /**
    * @description Validate request body using Joi schema
    */
-  validateParams(reqPayload, errorMessages);
-  let simulationDetails = null;
+  validateParams(groupsInput, errorMessages);
+
+  let scenarioData = null;
   /**
    * @description If Joi validation passed, perform DB validations
    */
   if (errorMessages.length === 0) {
     /**
-     * @description Validate simulation exists and is eligible for rollback
-     * @returns {Promise<Object>} Object if simulation is valid for rollback, otherwise throws BadRequest error
+     * @description Validate scenario exists (DB validation)
      */
-    simulationDetails = await validateRollbackEligibility(reqPayload);
+    scenarioData = await checkForInvalidScenario(groupsInput);
+    /**
+     * @description If scenario exists, validate that all simulations are in draft status
+     */
+    await checkForNonEditableScenario(groupsInput);
+    /**
+     * @description Check if groupName already exists for the scenario
+     */
+    await checkForDuplicateGroupName(groupsInput);
+    /**
+     * @description Check if vanningCenter and subSeriesList combination already exists for the scenario
+     */
+    await checkForDuplicateVanningCenterSubSeries(groupsInput);
   }
-
-  return { errorMessages: [...new Set(errorMessages)], simulationDetails };
+  return { errorMessages: [...new Set(errorMessages)], scenarioData };
 }
 
 /**
- * @description Function to validate request params using Joi schema
- * @param {Object} inputParams - request body
+ * @description Function to validate request body using Joi schema
+ * @param {Object} groupsInput - request body
  * @param {Array} errorMessages - array to collect validation errors
  */
-function validateParams(inputParams, errorMessages) {
+function validateParams(groupsInput, errorMessages) {
   const schema = getValidationSchema();
-  const { error } = schema.validate(inputParams, { abortEarly: false });
+  const { error } = schema.validate(groupsInput, { abortEarly: false });
   if (error?.details?.length) {
     error.details.forEach((e) => errorMessages.push(e.message));
   }
 }
 
 /**
- * @description Function to validate simulation existence and rollback eligibility
- * @param {Object} inputParams - request body containing simulationId
- * @returns {Promise<Object>} Object if simulation is valid for rollback
+ * @description Function to check if a scenario exists
+ * @param {Object} groupsInput - request body
+ * @returns {Promise<Object|null>} scenario row if exists else throw error
  */
-async function validateRollbackEligibility(inputParams) {
+async function checkForInvalidScenario(groupsInput) {
   const rdb = await dbConnect();
-  const simulationDataService = new simulationData(rdb);
+  const scenariosService = new scenariosData(rdb);
   try {
     /**
-     * @description Get simulation data by simulationId
+     * @description Get scenario data by scenarioId
      */
-    const simulationDetails = await simulationDataService.getSimulationById(
-      inputParams.simulationId
+    const scenarioData = await scenariosService.getScenarioDataById(
+      groupsInput.scenarioId
     );
     /**
-     * @description If simulation doesn't exist, throw BadRequest
+     * @description If scenario doesn't exist, add validation error and return null
      */
-    if (!simulationDetails || simulationDetails.length === 0) {
-      throw new BadRequest("ValidationError: simulationId doesn't exist.");
+    if (!scenarioData || scenarioData.length === 0) {
+      throw new BadRequest("ValidationError: Scenario doesn't exist.");
     }
-    const simulationStatus = simulationDetails[0].simulation_status;
+    return scenarioData[0];
+  } catch (err) {
+    console.log("Error in checkForInvalidScenario:", err);
+    throw err;
+  }
+}
+
+/**
+ * @description Function to check if provided groupName already exists for the scenario
+ * @param {Object} groupsInput - request body
+ * @returns {Promise<void>} Void if validation is successful
+ */
+async function checkForDuplicateGroupName(groupsInput) {
+  const { scenarioId, data } = groupsInput;
+  const rdb = await dbConnect();
+  const groupScenarioMapperService = new groupScenarioMapperData(rdb);
+  try {
     /**
-     * @description Approved or Promoted rundown cannot be reverted
+     * @description Extract groupNames and groupScenarioMapIds of update rows to exclude
      */
-    if (
-      simulationStatus === SIMULATION_STATUSES.APPROVED ||
-      simulationStatus === SIMULATION_STATUSES.PROMOTED
-    ) {
+    const groupNames = data.map((item) => item.groupName);
+    const excludeGroupScenarioMapIds = data
+      .filter((item) => typeof item.groupScenarioMapId === "string")
+      .map((item) => item.groupScenarioMapId);
+    /**
+     * @description Get existing group names for the scenario excluding update rows
+     */
+    const existingGroups =
+      await groupScenarioMapperService.getExistingGroupNames(
+        scenarioId,
+        groupNames,
+        excludeGroupScenarioMapIds
+      );
+    /**
+     * @description If any groupName already exists, throw validation error
+     */
+    if (existingGroups && existingGroups.length > 0) {
       throw new BadRequest(
-        "ValidationError: Rundown cannot be reverted to the draft state, once approved or promoted."
+        "ValidationError: Provided groupName already exists."
       );
     }
-    return simulationDetails[0];
   } catch (err) {
-    console.log("Error in validateRollbackEligibility:", err);
+    console.log("Error in checkForDuplicateGroupName:", err);
+    throw err;
+  }
+}
+
+/**
+ * @description Function to check if vanningCenter and subSeriesList combination already exists for the scenario
+ * @param {Object} groupsInput - request body
+ * @returns {Promise<void>} Void if validation is successful
+ */
+async function checkForDuplicateVanningCenterSubSeries(groupsInput) {
+  const { scenarioId, data } = groupsInput;
+  const rdb = await dbConnect();
+  const groupingDataService = new groupingData(rdb);
+  try {
+    /**
+     * @description Extract groupScenarioMapIds of update rows to exclude
+     */
+    const excludeGroupScenarioMapIds = data
+      .filter((item) => typeof item.groupScenarioMapId === "string")
+      .map((item) => item.groupScenarioMapId);
+    /**
+     * @description Get existing vanningCenter and subSeriesList combinations for the scenario excluding update rows
+     */
+    const existingGroupData =
+      await groupingDataService.getGroupsDataByScenarioId(scenarioId);
+    /**
+     * @description Build a unique signature for each groupId using vanningCenter + sorted subSeries list
+     */
+    validateDuplicateSignatureInInput(data);
+    /* If active groups exists for scenario */
+    if (existingGroupData && existingGroupData.length > 0) {
+      const existingSignatureToGroupIds = buildExistingSignatureToGroupIds(
+        existingGroupData,
+        excludeGroupScenarioMapIds
+      );
+      /**
+       * @description Validate that no signature in input matches with existing signatures for different groupScenarioMapIds, if yes throw validation error
+       */
+      validateDuplicateSignatureWithExisting(data, existingSignatureToGroupIds);
+    }
+  } catch (err) {
+    console.log("Error in checkForDuplicateVanningCenterSubSeries:", err);
     throw err;
   }
 }
 
 module.exports = {
-  validateRequestBody,
+  validateInput,
 };
